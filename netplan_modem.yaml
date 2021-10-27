@@ -1,0 +1,11 @@
+network:
+  version: 2
+  renderer: NetworkManager
+  modems:
+    cdc-wdm:
+      apn: iot.acsdynamic
+      dhcp4: true
+      dhcp4-overrides:
+        route-metric: 100
+      match:
+        name: cdc-wdm*
