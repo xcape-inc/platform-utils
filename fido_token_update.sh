@@ -130,6 +130,12 @@ sudo rm /tmp/fido2luks.conf
 ROOT_CRYPT_UUID=$(sudo blkid -s UUID -o value ${ROOT_DEVICE_PATH})
 #ROOT_UUID=$(sudo blkid -s UUID -o value /dev/ubuntu-vg/root)
 BOOT_UUID=$(sudo blkid -s UUID -o value ${BOOT_DEVICE_PATH})
+# TODO: have to be sure to remove existing entry first
+if [[ -e /etc/crypttab ]]; then
+  sudo sed -i "/UUID=${ROOT_CRYPT_UUID}/d" /etc/crypttab
+else
+  (echo '# <target name>	<source device>		<key file>	<options>' | sudo tee /etc/crypttab > /dev/null)
+fi
 echo "${DM_CRYPT_NAME} UUID=${ROOT_CRYPT_UUID} none luks,initramfs,keyscript=fido2luks-xcape" | sudo tee -a "${ROOT_MOUNT_POINT}/etc/crypttab"
 # update root in fstab
 sudo sed -i "s/^LABEL=system-boot/UUID=${BOOT_UUID}/" "${ROOT_MOUNT_POINT}/etc/fstab"
