@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll until the modem is ready and set the LEDs as appropriate
+After=ModemManager.service
+Wants=ModemManager.service
+After=sys-subsystem-net-devices-wwan0.device
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/check_modem_ready.sh
+
+[Install]
+WantedBy=multi-user.target
