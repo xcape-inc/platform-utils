@@ -24,6 +24,7 @@ sudo insmod "${DKMS_DRIVER_PATH}" || true
 sleep 1
 sudo /usr/local/bin/fix-bettercap.sh
 sleep 1
-exec sudo bettercap -no-colors -eval "set events.stream.output /var/log/bettercap.log; events.stream off; events.stream on; set api.rest.websocket true; https-ui; set gps.device localhost:2947; gps on; set wifi.interface wlan0; wifi.recon on"
+export CAPSPATH=/usr/local/share/bettercap-xcape/caplets
+exec sudo -E bettercap -no-colors -eval "set events.stream.output /var/log/bettercap.log; events.stream off; events.stream on; set api.rest.websocket true; https-ui-xcape; set gps.device localhost:2947; gps on; set wifi.interface wlan0; wifi.recon on"
 #bettercap -no-colors -caplet https-ui & #-autostart 'gps' #,wifi.recon'
 #exit 0
