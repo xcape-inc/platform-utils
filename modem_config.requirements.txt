@@ -1,0 +1,6 @@
+pyserial
+pexpect
+requests
+beautifulsoup4
+#tqdm
+pySmartDl
