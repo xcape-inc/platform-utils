@@ -486,24 +486,48 @@ def getQmicliBinaryPath():
     return qmicliBinaryPath
 
 
-def qmiResetModem(vidPid=None, maxRetries:int=None, interval:float=None, pickFirstDevice:bool=None):
+def qmiResetModem(vidPid=None, maxRetries:int=None, interval:float=None, pickFirstDevice:bool=None, offlineRetries:int=None, resetRetries:int=None):
+    if offlineRetries is None:
+        offlineRetries = 2
+    if resetRetries is None:
+        resetRetries = 3
+
     qmicliPath = getQmicliBinaryPath()
 
     modemDevPath = waitForModemDevice(vidPid=vidPid, maxRetries=maxRetries, interval=interval, pickFirstDevice=pickFirstDevice)
 
     logger.debug('setting modem offline with QMI ...')
     # Set modem offline if we can (maybe modem is already offline? if so just reset)
-    try:
-        subprocess.run([qmicliPath, '-p', '-d', modemDevPath, '--dms-set-operating-mode=offline'], check=True, encoding='utf-8')
-    except subprocess.CalledProcessError as e:
-        # TODO: if captureing output, could look for message like
-        # error: couldn't create client for the 'dms' service: CID allocation failed in the CTL client: Transaction timed out
-        logger.warn(f'Could not put modem in offline mode: {e}')
-    logger.debug('Issuing qmi mode reset command now !!!')
+    for curRetry in range(0, offlineRetries):
+        if curRetry > 0:
+            logger.debug(f'Retrying putting modem offline: {curRetry}')
+        try:
+            subprocess.run([qmicliPath, '-p', '-d', modemDevPath, '--dms-set-operating-mode=offline'], check=True, encoding='utf-8')
+        except subprocess.CalledProcessError as e:
+            # TODO: if captureing output, could look for message like
+            # error: couldn't create client for the 'dms' service: CID allocation failed in the CTL client: Transaction timed out
+            logger.warn(f'Could not put modem in offline mode: {e}')
+        else:
+            break
+
+    def resetWithQmiCli():
+        for curRetry in range(0, resetRetries):
+            if curRetry > 0:
+                logger.debug(f'Retrying putting modem in reset: {curRetry}')
+            try:
+                subprocess.run([qmicliPath, '-p', '-d', modemDevPath, '--dms-set-operating-mode=reset'], check=True, encoding='utf-8')
+            except subprocess.CalledProcessError as e:
+                # TODO: if captureing output, could look for message like
+                # error: couldn't create client for the 'dms' service: CID allocation failed in the CTL client: Transaction timed out
+                logger.warn(f'Could not put modem in offline mode: {e}')
+            else:
+                break
+        else:
+            raise RuntimeError('Failed to reset the modem')
+
     # issue modem reset
-    waitForModemGoneAfterCall(
-        methodToCall=lambda :subprocess.run([qmicliPath, '-p', '-d', modemDevPath, '--dms-set-operating-mode=reset'], check=True, encoding='utf-8'),
-        vidPid=vidPid, pickFirstDevice=pickFirstDevice)
+    logger.debug('Issuing qmi mode reset command now !!!')
+    waitForModemGoneAfterCall(methodToCall=resetWithQmiCli, vidPid=vidPid, pickFirstDevice=pickFirstDevice)
 
 
 def resetModem(vidPid=None, maxRetries:int=None, interval:float=None, pickFirstDevice:bool=None):
@@ -579,8 +603,6 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
                             and contain 2 file: the firmware is the .CWE file and the .NVU is the carrier
                             provisioning PRI file
     '''
-
-    # TODO: enable auto-detect on serialDevPath of None
 
     if firmwareToApply is None:
         firmwareToApply = DEFAULT_FIRMWARE_ORDER_LIST
@@ -736,7 +758,7 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
     # Reboot the modem
     resetModem()
     # wait for modem to come back
-    waitForModemDevice()
+    waitForModemDevice(maxRetries=30)
 
     # auto-discover at device name
     curSerialDevPath = serialDevPath
