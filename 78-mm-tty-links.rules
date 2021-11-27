@@ -1,0 +1,5 @@
+# ModemManager has a rule at /usr/lib/udev/rules.d/77-mm-sierra.rules to set env values on the appropriate tty devices
+# re-use this to create simple symlinks for our own use
+SUBSYSTEM=="tty", ACTION=="add", ENV{ID_MM_PORT_TYPE_AT_PRIMARY}=="1", SYMLINK+="mm-at%n"
+SUBSYSTEM=="tty", ACTION=="add", ENV{ID_MM_PORT_TYPE_GPS}=="1", SYMLINK+="mm-gps%n"
+SUBSYSTEM=="tty", ACTION=="add", ENV{ID_MM_PORT_TYPE_QCDM}=="1", SYMLINK+="mm-qcdm%n"

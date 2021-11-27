@@ -1,0 +1,2 @@
+# set the interface number of usb devices
+SUBSYSTEMS=="usb", ENV{ID_USB_INTERFACE_NUM}="$attr{bInterfaceNumber}"

@@ -1,5 +1,6 @@
 #!/opt/modem_config/bin/python3
 from pexpect.exceptions import TIMEOUT
+from typing import Callable, Any
 import os
 import serial
 import sys
@@ -179,7 +180,7 @@ def downloadFirmware(pageUrlToParse, modelHeader, carrierList=None):
             targetFilename = f'{curCarrierName}@{targetFilename}'
             targetFilePath = os.path.join(modemFirmwareDirPath, targetFilename)
 
-            # TODO: download the binary to a file
+            # download the binary to a file
             logger.debug(f'Writing firmware binary for {curCarrierName} from {targetFinalUrl} to {targetFilePath}')
         
             targetFileBytes = int(responseObj.headers.get('content-length', 0))
@@ -351,7 +352,10 @@ def getFindBinaryPath():
     return findBinaryPath
 
 
-def waitForModemDevice(vidPid=None, maxRetries:int=None, interval:float=None):
+def waitForModemDevice(vidPid=None, maxRetries:int=None, interval:float=None, pickFirstDevice:bool=None):
+    if pickFirstDevice is None:
+        pickFirstDevice = False
+
     findPath = getFindBinaryPath()
 
     waitForModem(vidPid=vidPid, maxRetries=maxRetries, interval=interval)
@@ -365,27 +369,59 @@ def waitForModemDevice(vidPid=None, maxRetries:int=None, interval:float=None):
     matches = proccomp.stdout.splitlines()
     
     # can only do 1 atm
-    if len(matches) > 1:
+    if len(matches) > 1 and not pickFirstDevice:
         raise RuntimeError(f'Too many matching devices.  Expected max of 1, but found {len(matches)}')
     # if we found our device, exit the loop
     if len(matches) < 1:
         raise NoUsbDeviceFoundError(f'No matching device files.  Expected 1, but found {len(matches)}')
+    retDev = matches[0]
 
-    return matches[0]
+    logger.debug(f'qmi device path: {retDev}')
+
+    return retDev
+
+
+def waitForModemAtDevice(vidPid=None, maxRetries:int=None, interval:float=None, pickFirstDevice:bool=None):
+    if pickFirstDevice is None:
+        pickFirstDevice = True
+
+    findPath = getFindBinaryPath()
+
+    waitForModemDevice(vidPid=vidPid, maxRetries=maxRetries, interval=interval)
+
+    # do we really need this here? searching dmesg is rough
+    # this looks for the output from qcserial creating a tty for subdevice 3
+    #ttyUSB=$(dmesg | grep '.3: Qualcomm USB modem converter detected' -A1 | grep -Eo 'ttyUSB[0-9]$' | tail -1)
+
+    proccomp = subprocess.run([findPath, '/dev', '-maxdepth', '1', '-mindepth', '1', '-type', 'l', '-iname', 'mm-at*'], capture_output=True, check=True, encoding='utf-8')
+
+    matches = proccomp.stdout.splitlines()
+    
+    # can only do 1 atm
+    if len(matches) > 1 and not pickFirstDevice:
+        raise RuntimeError(f'Too many matching devices.  Expected max of 1, but found {len(matches)}')
+    # if we found our device, exit the loop
+    if len(matches) < 1:
+        raise NoUsbDeviceFoundError(f'No matching device files.  Expected 1, but found {len(matches)}')
+    retDev = matches[0]
+
+    logger.debug(f'at device path: {retDev}')
+
+    return retDev
 
 
 class UsbDeviceFoundError(RuntimeError):
     ...
 
 
-def waitForModemGoneAfterCall(methodToCall:callable, vidPid=None, maxRetries:int=None, interval:float=None) -> None:
+def waitForModemGoneAfterCall(methodToCall:Callable, vidPid=None, maxRetries:int=None, interval:float=None, pickFirstDevice:bool=None) -> None:
     # by default, wait up to roughly 30 seconds for this to go away
     if maxRetries is None:
         maxRetries = 100
     if interval is None:
         interval = 0.3
 
-    waitForModemDevice(vidPid=vidPid)
+    waitForModemDevice(vidPid=vidPid, pickFirstDevice=pickFirstDevice)
 
     methodToCall()
 
@@ -404,8 +440,8 @@ def waitForModemGoneAfterCall(methodToCall:callable, vidPid=None, maxRetries:int
         raise UsbDeviceFoundError()
 
 
-def resetModemUsb(vidPid=None, maxRetries:int=None, interval:float=None):
-    modemDevPath = waitForModemDevice(vidPid=vidPid, maxRetries=maxRetries, interval=interval)
+def resetModemUsb(vidPid=None, maxRetries:int=None, interval:float=None, pickFirstDevice=None):
+    modemDevPath = waitForModemDevice(vidPid=vidPid, maxRetries=maxRetries, interval=interval, pickFirstDevice=pickFirstDevice)
 
     # get enough device info to find the pci device
     qmiDevStat = os.stat(modemDevPath)
@@ -450,30 +486,35 @@ def getQmicliBinaryPath():
     return qmicliBinaryPath
 
 
-def qmiResetModem(vidPid=None, maxRetries:int=None, interval:float=None):
+def qmiResetModem(vidPid=None, maxRetries:int=None, interval:float=None, pickFirstDevice:bool=None):
     qmicliPath = getQmicliBinaryPath()
 
-    modemDevPath = waitForModemDevice(vidPid=vidPid, maxRetries=maxRetries, interval=interval)
+    modemDevPath = waitForModemDevice(vidPid=vidPid, maxRetries=maxRetries, interval=interval, pickFirstDevice=pickFirstDevice)
 
     logger.debug('setting modem offline with QMI ...')
-    # Set modem offline
-    subprocess.run([qmicliPath, '-p', '-d', modemDevPath, '--dms-set-operating-mode=offline'], check=True, encoding='utf-8')
+    # Set modem offline if we can (maybe modem is already offline? if so just reset)
+    try:
+        subprocess.run([qmicliPath, '-p', '-d', modemDevPath, '--dms-set-operating-mode=offline'], check=True, encoding='utf-8')
+    except subprocess.CalledProcessError as e:
+        # TODO: if captureing output, could look for message like
+        # error: couldn't create client for the 'dms' service: CID allocation failed in the CTL client: Transaction timed out
+        logger.warn(f'Could not put modem in offline mode: {e}')
     logger.debug('Issuing qmi mode reset command now !!!')
     # issue modem reset
     waitForModemGoneAfterCall(
         methodToCall=lambda :subprocess.run([qmicliPath, '-p', '-d', modemDevPath, '--dms-set-operating-mode=reset'], check=True, encoding='utf-8'),
-        vidPid=vidPid)
+        vidPid=vidPid, pickFirstDevice=pickFirstDevice)
 
 
-def resetModem(vidPid=None, maxRetries:int=None, interval:float=None):
-    qmiResetModem(vidPid=vidPid, maxRetries=maxRetries, interval=interval)
+def resetModem(vidPid=None, maxRetries:int=None, interval:float=None, pickFirstDevice:bool=None):
+    qmiResetModem(vidPid=vidPid, maxRetries=maxRetries, interval=interval, pickFirstDevice=pickFirstDevice)
     #resetModemUsb(vidPid=vidPid, maxRetries=maxRetries, interval=interval)
 
 
-def setModemToQmiMode(vidPid=None, maxRetries:int=None, interval:float=None):
+def setModemToQmiMode(vidPid=None, maxRetries:int=None, interval:float=None, pickFirstDevice:bool=None):
     qmicliPath = getQmicliBinaryPath()
 
-    modemDevPath = waitForModemDevice(vidPid=vidPid, maxRetries=maxRetries, interval=interval)
+    modemDevPath = waitForModemDevice(vidPid=vidPid, maxRetries=maxRetries, interval=interval, pickFirstDevice=pickFirstDevice)
 
     # Make sure basic device mode is exposed w qmi
     '''
@@ -501,6 +542,33 @@ def qmiFactoryDefaultModem(serviceProgCode:str=None, vidPid=None, maxRetries:int
     subprocess.run([qmicliPath, '-p', '-d', modemDevPath, f'--dms-restore-factory-defaults={serviceProgCode}'], check=True, encoding='utf-8')
 
 
+def noop():
+    pass
+
+
+def getSendAtCommand(spawn) -> Callable[[str, Any, int], None]:
+    def sendAtCommand(command: str, expectedResponse=None, waitTime:int=None, sleepAfter:int=None) -> None:
+        if expectedResponse is None:
+            expectedResponse = ['OK']
+        if waitTime is None:
+            waitTime = 5
+        if sleepAfter is None:
+            sleepAfter = 1
+
+        if not isinstance(expectedResponse, list):
+            expectedResponse = [expectedResponse]
+
+        spawn.send(f'{command}\r\n')
+        try:
+            spawn.expect(expectedResponse + [EOF], waitTime)
+        except TIMEOUT as e:
+            e.__cause__ = RuntimeError(f'Output did not match expected response:\n{expectedResponse}\nfound before:\n{spawn.before}\nfound after:\n{spawn.after}')
+            raise e
+        time.sleep(sleepAfter)
+    return sendAtCommand
+
+
+
 def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A710') -> None:
     '''
     Method to configure a modem as desired for our carrier(s) and GPS.  This method requires the modem to be currently
@@ -511,6 +579,8 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
                             and contain 2 file: the firmware is the .CWE file and the .NVU is the carrier
                             provisioning PRI file
     '''
+
+    # TODO: enable auto-detect on serialDevPath of None
 
     if firmwareToApply is None:
         firmwareToApply = DEFAULT_FIRMWARE_ORDER_LIST
@@ -530,34 +600,77 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
         carrierFileDict[curCarrierName] = unpackCarrierZip(curCarrierName, curCarrierZip)
 
     # Make sure the modem is ready (reset it first)
-    resetModem()
+    resetModemUsb(pickFirstDevice=True)
+
+    time.sleep(1)
+
+    resetModem(pickFirstDevice=True)
 
     # Make sure device is in qmi mode
-    setModemToQmiMode()
+    setModemToQmiMode(pickFirstDevice=True)
     
     # Reset the modem to ensure settings take
-    resetModem()
+    resetModem(pickFirstDevice=True)
 
     # factory reset modem
-    # Note: cant get this to work ATM
+    # Note: cant get this to work ATM, so doing this with AT command
     #qmiFactoryDefaultModem()
+    waitForModemDevice()
+
+    # auto-discover at device name
+    curSerialDevPath = serialDevPath
+    if serialDevPath is None:
+        curSerialDevPath = waitForModemAtDevice()
+
+    with serial.Serial(curSerialDevPath, 115200, timeout=0) as ser:
+        spawn = pexpect.fdpexpect.fdspawn(ser, encoding='utf-8', logfile = sys.stdout)
+
+        sendAtCommand = getSendAtCommand(spawn)
+
+        # unlock "privileged" commands on the modem
+        sendAtCommand(f'AT!ENTERCND="{unlockPassword}"', waitTime=10)
+
+        # example output from rmareset 
+        '''
+        AT!RMARESET=1
+        !RMARESET: DEVICE REBOOT REQUIRED
+
+        Items Restored:  2161
+        Items Deleted:   0
+
+        ERROR
+        '''
+
+        # Do a factory reset
+        # <restore point> = 1—“Provision” (Sierra-provisioned SKU configuration)
+        # Note: give this some extra time to respond
+        sendAtCommand('AT!RMARESET=1', expectedResponse='!RMARESET: DEVICE REBOOT REQUIRED', waitTime=10)
     
     # Reset the modem to ensure modem at factory defaults
-    resetModem()
+    resetModemUsb(pickFirstDevice=True)
+    resetModem(pickFirstDevice=True)
+
+    # Note: the modem may actually reboot twice; watchout! Lets give it some time to see if it will reboot a second time on its own.
+    try:
+        waitForModemGoneAfterCall(noop, pickFirstDevice=True)
+    except UsbDeviceFoundError:
+        pass
+
+    # Give this command some extra buffer time since the modem DID just factory reset; it might take a minute to reappear (this should wait up to roughly 90 seconds)
+    setModemToQmiMode(pickFirstDevice=True, maxRetries=30)
+    resetModem(pickFirstDevice=True) 
 
     modemQmiDev = waitForModemDevice()
 
-    with serial.Serial(serialDevPath, 115200, timeout=0) as ser:
+    # auto-discover at device name
+    curSerialDevPath = serialDevPath
+    if serialDevPath is None:
+        curSerialDevPath = waitForModemAtDevice()
+
+    with serial.Serial(curSerialDevPath, 115200, timeout=0) as ser:
         spawn = pexpect.fdpexpect.fdspawn(ser, encoding='utf-8', logfile = sys.stdout)
 
-        def sendAtCommand(command: str, expectedResponse:str='OK', waitTime:int=5, sleepAfter:int=1):
-            spawn.send(f'{command}\r\n')
-            try:
-                spawn.expect([expectedResponse, EOF], waitTime)
-            except TIMEOUT as e:
-                e.__cause__ = RuntimeError(f'Output did not match expected response:\n{expectedResponse}\nfound before:\n{spawn.before}\nfound after:\n{spawn.after}')
-                raise e
-            time.sleep(sleepAfter)
+        sendAtCommand = getSendAtCommand(spawn)
 
         # unlock "privileged" commands on the modem
         sendAtCommand(f'AT!ENTERCND="{unlockPassword}"', waitTime=10)
@@ -567,8 +680,7 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
     resetModem()
     waitForModemDevice()
 
-    # TODO: something to load the firmware
-    # TODO: debug AT!IMAGE?
+    # TODO: Move the firmware laoding to a method
     
     firmwareCommandArgs = [getQmiFlashBinaryPath(), '--update', '-d', '1199:9071', '--override-download']
     # flash each set of firmware files
@@ -583,36 +695,37 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
         logger.debug('Waiting for modem to return ...')
         waitForModemDevice()
         # This is good for diag AND to tell us the modem is ready
-        with serial.Serial(serialDevPath, 115200, timeout=0) as ser:
+        # auto-discover at device name
+        curSerialDevPath = serialDevPath
+        if serialDevPath is None:
+            curSerialDevPath = waitForModemAtDevice()
+
+        with serial.Serial(curSerialDevPath, 115200, timeout=0) as ser:
             spawn = pexpect.fdpexpect.fdspawn(ser, encoding='utf-8', logfile = sys.stdout)
 
-            def sendAtCommand(command: str, expectedResponse:str='OK', waitTime:int=5, sleepAfter:int=1):
-                spawn.send(f'{command}\r\n')
-                try:
-                    spawn.expect([expectedResponse, EOF], waitTime)
-                except TIMEOUT as e:
-                    e.__cause__ = RuntimeError(f'Output did not match expected response:\n{expectedResponse}\nfound before:\n{spawn.before}\nfound after:\n{spawn.after}')
-                    raise e
-                time.sleep(sleepAfter)
+            sendAtCommand = getSendAtCommand(spawn)
             
             sendAtCommand('AT!IMAGE?', waitTime=10)
 
-    with serial.Serial(serialDevPath, 115200, timeout=0) as ser:
+    # auto-discover at device name
+    curSerialDevPath = serialDevPath
+    if serialDevPath is None:
+        curSerialDevPath = waitForModemAtDevice()
+
+    with serial.Serial(curSerialDevPath, 115200, timeout=0) as ser:
         spawn = pexpect.fdpexpect.fdspawn(ser, encoding='utf-8', logfile = sys.stdout)
 
-        def sendAtCommand(command: str, expectedResponse:str='OK', waitTime:int=5, sleepAfter:int=1):
-            spawn.send(f'{command}\r\n')
-            try:
-                spawn.expect([expectedResponse, EOF], waitTime)
-            except TIMEOUT as e:
-                e.__cause__ = RuntimeError(f'Output did not match expected response:\n{expectedResponse}\nfound before:\n{spawn.before}\nfound after:\n{spawn.after}')
-                raise e
-            time.sleep(sleepAfter)
+        sendAtCommand = getSendAtCommand(spawn)
 
         # unlock "privileged" commands on the modem
         sendAtCommand(f'AT!ENTERCND="{unlockPassword}"', waitTime=10)
+        
+        # TODO: need to talk to TJ about this; only have single at!sim w xcape apn (on tmo); can this work??? I've had issues...
         # enable auto-sim for firmware hopping+APN
-        sendAtCommand('AT!IMPREF="AUTO-SIM"')
+        #sendAtCommand('AT!IMPREF="AUTO-SIM"')
+        sendAtCommand('AT!IMPREF="GENERIC"')
+
+
         # set QMI mode and expose composite devices (diag,nmea,modem,rmnet0)
         #sendAtCommand('AT!USBCOMP=1,1,10D')
         sendAtCommand('AT!USBCOMP=1,1,0000010D')
@@ -625,17 +738,15 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
     # wait for modem to come back
     waitForModemDevice()
 
-    with serial.Serial(serialDevPath, 115200, timeout=0) as ser:
+    # auto-discover at device name
+    curSerialDevPath = serialDevPath
+    if serialDevPath is None:
+        curSerialDevPath = waitForModemAtDevice()
+
+    with serial.Serial(curSerialDevPath, 115200, timeout=0) as ser:
         spawn = pexpect.fdpexpect.fdspawn(ser, encoding='utf-8', logfile = sys.stdout)
 
-        def sendAtCommand(command: str, expectedResponse:str='OK', waitTime:int=5, sleepAfter:int=1):
-            spawn.send(f'{command}\r\n')
-            try:
-                spawn.expect([expectedResponse, EOF], waitTime)
-            except TIMEOUT as e:
-                e.__cause__ = RuntimeError(f'Output did not match expected response:\n{expectedResponse}\nfound before:\n{spawn.before}\nfound after:\n{spawn.after}')
-                raise e
-            time.sleep(sleepAfter)
+        sendAtCommand = getSendAtCommand(spawn)
 
         # Get a final statement about the loaded images
         sendAtCommand('AT!IMAGE?', waitTime=10)
@@ -644,13 +755,44 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
         sendAtCommand(f'AT!ENTERCND="{unlockPassword}"', waitTime=10)
 
         # disable gps auto start
-        sendAtCommand('AT!GPSAUTOSTART=0')
+        #sendAtCommand('AT!GPSAUTOSTART=0')
 
         # stop any running gps sessions
-        sendAtCommand('AT!GPSEND=0,255')
+        #sendAtCommand('AT!GPSEND=0,255')
+
+        ## undocumented command to enable xtra location assistance
+        # Note: this MUST go before posmode options as it will reset them
+        sendAtCommand('AT!GPSXTRADATAENABLE=1,3,10,1,24')
 
         # enabled ALL GPS modes
-        sendAtCommand('AT!GPSPOSMODE=7F')
+        #sendAtCommand('AT!GPSPOSMODE=7F')
+        ## More undocumented junk.....
+        '''
+        !GPSPOSMODE: <MASK>
+        Bit0-Standalone
+        Bit1-UP MS-Based
+        Bit2-UP MS-Assisted
+        Bit3-CP MS-Based(2G)
+        Bit4-CP MS-Assisted(2G)
+        Bit5-CP MS-Based(3G)
+        Bit6-CP MS-Assisted(3G)
+        Bit8-UP MS-Based(4G)
+        Bit9-UP MS-Assisted(4G)
+        Bit10-CP MS-Based(4G)
+        Bit11-CP MS-Assisted(4G)
+        Bit17-A-Glonass UP MS-Based(3G)
+        Bit18-A-Glonass UP MS-Assisted(3G)
+        Bit19-A-Glonass CP MS-Based(3G)
+        Bit20-A-Glonass CP MS-Assisted(3G)
+        Bit21-A-Glonass UP MS-Based(4G)
+        Bit22-A-Glonass UP MS-Assisted(4G)
+        Bit23-A-Glonass CP MS-Based(4G)
+        Bit24-A-Glonass CP MS-Assisted(4G)
+        '''
+        # Enable EVERYTHING
+        sendAtCommand('AT!GPSPOSMODE=1FE037F')
+
+        # TODO: make sure we double check all these settings...
 
         ##Active GOOGLE
         #### AGPS server settings GOOGLE ###
@@ -669,7 +811,8 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
             #sendAtCommand('AT!GPSSUPLURL="supl.google.com:7275"')
             sendAtCommand('AT!GPSSUPLURL="supl.google.com:7276"')
 
-        try:
+
+        '''try:
             # get the current server port for assisted gps http calls
             #sendAtCommand('AT!GPSPORTID?', expectedResponse='7275')
             sendAtCommand('AT!GPSPORTID?', expectedResponse='7276')
@@ -677,16 +820,28 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
             # set the server port for assisted gps http calls
             #sendAtCommand('AT!GPSPORTID=7275')
             sendAtCommand('AT!GPSPORTID=7276')
+        try:
+            # get the current server port for assisted gps http calls
+            #sendAtCommand('AT!GPSPORTID?', expectedResponse='7275')
+            sendAtCommand('AT!GPSPORTID?', expectedResponse='0')
+        except TIMEOUT:
+            # set the server port for assisted gps http calls
+            #sendAtCommand('AT!GPSPORTID=7275')
+            sendAtCommand('AT!GPSPORTID=0')'''
 
         # enable transport security (tls) for assisted gps calls
-        #sendAtCommand('AT!GPSTRANSSEC=1')
+        # disabled
         sendAtCommand('AT!GPSTRANSSEC=0')
-
+        # enabled... ish
+        #sendAtCommand('AT!GPSTRANSSEC=1')
+        # enabled... tls1.1, sha1, sha256
+        #sendAtCommand('AT!GPSTRANSSEC=7')
+        #sendAtCommand('AT!GPSTRANSSEC=7')
+        ##### GOBIIM ?
         # set the agps supl version to 1
-        sendAtCommand('AT!GPSSUPLVER=1')
+        sendAtCommand('AT!GPSSUPLVER=2')
 
-        # Use the aux antenna for shared GPS/RX purposes (GPS/Rx diversity antenna)
-        sendAtCommand('AT!CUSTOM="GPSSEL",0') # use 0 if on external antenna only
+        sendAtCommand('AT!CUSTOM="GPSLPM",1')
 
         # When using an external powered antenna
         #AT+WANT=1
@@ -696,8 +851,52 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
         #AT!GPSNMEACONFIG=1,1
         ## orig
         #AT!GPSNMEASENTENCE=3F
+
+    # Whenever we run a "custom"  NV setting AT command, it seems to make the dive reset itself afterwards; lets account for this
+    explicitRetryCount:int = None
+    try:
+        waitForModemGoneAfterCall(noop, pickFirstDevice=True)
+    except UsbDeviceFoundError:
+        pass
+    else:
+        # if the device DID disconnect, we want to wait a little longer for it to reboot if needed
+        explicitRetryCount = 30
+        # otherwise, we just use the defaults
+
+    # we did a lot of things;
+    # Reboot the modem to ensure settings are stored
+    waitForModemDevice(maxRetries=explicitRetryCount)
+
+    # If the nv settings caused a reboot, we probably need to reset the usb before we can reset the modem
+    if explicitRetryCount is not None:
+        resetModemUsb()
+    resetModem()
+    # wait for modem to come back
+    waitForModemDevice()
+
+    # auto-discover at device name
+    curSerialDevPath = serialDevPath
+    if serialDevPath is None:
+        curSerialDevPath = waitForModemAtDevice()
+
+    with serial.Serial(curSerialDevPath, 115200, timeout=0) as ser:
+        spawn = pexpect.fdpexpect.fdspawn(ser, encoding='utf-8', logfile = sys.stdout)
+
+        sendAtCommand = getSendAtCommand(spawn)
+
+        # unlock "privileged" commands on the modem
+        sendAtCommand(f'AT!ENTERCND="{unlockPassword}"', waitTime=10)
+
+        ### Set an APN for gps subsystem to use to download data
+        #sendAtCommand('AT!GPSLBSAPN=1,0x1F,"IPV4V6","iot.acsdynamic"')
+        #AT!GPSLBSAPN=1,0x1F,"IPV4V6","epc.tmobile.com"
+
         ## recomended nmea sentance for more satellites, etc
-        sendAtCommand('AT!GPSNMEASENTENCE=29FF')
+        #sendAtCommand('AT!GPSNMEASENTENCE=29FF')
+        sendAtCommand('AT!GPSNMEASENTENCE=7FFF')
+        #sendAtCommand('AT!GPSNMEASENTENCE=21FF')
+        # Use the aux antenna for shared GPS/RX purposes (GPS/Rx diversity antenna)
+        sendAtCommand('AT!CUSTOM="GPSSEL",0') # use 0 if on external antenna only
 
         ## send a single fix request to get agps seeded
         #spawn.send('AT!GPSFIX=2,30,4294967280\r\n')
@@ -712,9 +911,43 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
         ## note: the google server does not support msa, only msb, hence mode 2 (msb)
         #spawn.send('AT!GPSAUTOSTART=2,2,10,4294967280,15\r\n')
         sendAtCommand('AT!GPSAUTOSTART=2,2,60,4294967280,1')
+        
+        #AT!GPSFIX=2,255,4294967280
+        
+        #AT!GPSstatus?
+        #at!GPSSATINFO?
 
+        
+        #AT!GPSXTRAINITDNLD
+        #AT!GPSPOSMODE=7f
+        #at!GPSXTRASTATUS?
+
+        # Putting this note here.
+        # Fun fact: on boot, the nmea port is at 115200, but when you enable nmea and raw mode with mmcli, it changes to 9600 . -_-  and if you dont knwo that, it looks like it just stops
+
+    # The modem has been seen to disconnect/reconnect at the end of all of this; give some cushion for that to happen before we force reboot it
+    # Whenever we run a "custom"  NV setting AT command, it seems to make the dive reset itself afterwards; lets account for this
+    explicitRetryCount:int = None
+    try:
+        waitForModemGoneAfterCall(noop, pickFirstDevice=True)
+    except UsbDeviceFoundError:
+        pass
+    else:
+        # if the device DID disconnect, we want to wait a little longer for it to reboot if needed
+        explicitRetryCount = 30
+        # otherwise, we just use the defaults
+
+    # we did a lot of things;
+    # Reboot the modem to ensure settings are stored
+    waitForModemDevice(maxRetries=explicitRetryCount)
+
+    # If the nv settings caused a reboot, we probably need to reset the usb before we can reset the modem
+    if explicitRetryCount is not None:
+        resetModemUsb()
     resetModem()
+    # wait for modem to come back
     waitForModemDevice()
+
     #with serial.Serial(gps_serial_dev_path, 115200, timeout=0) as ser:
     #    ser.write(b'$GPS_START\r\n')
 
@@ -734,13 +967,15 @@ if __name__ == '__main__':
     # set log level
     logger.setLevel(logging.DEBUG)
 
-    # TODO: Download the firmware images and prep them
+    # Download the firmware images and prep them
     if 'true' != os.getenv('SKIP_FIRMWARE_DL'):
         #  Need to grab Latest T mobile, Verizon, Sprint, and generic; load in that order
         downloadFirmware(SIERRA_WIRELESS_MC74XX_FIRMWARE_URL, '7455')
 
     # TODO: if this gets more complex, implement click
-    serial_dev_path = '/dev/ttyUSB2'
+    # call with $(find /dev -mindepth 1 -maxdepth 1 -type l -iname 'mm-at*' | head -1)
+    #serial_dev_path = '/dev/ttyUSB2'
+    serial_dev_path = None
     if len(sys.argv) > 1:
         serial_dev_path = sys.argv[1]
 

@@ -1,0 +1,15 @@
+# Sierra GPS interfaces - use gpsd instead of MM
+#  note on udev matching: it seems all ATTRS matches must be found at the same
+#  level, so we must use ENV{ID_VENDOR_ID} to be able to match against bInterfaceNumber
+#SUBSYSTEM=="usb",ACTION=="add",ENV{ID_VENDOR_ID}=="1199",ATTRS{bInterfaceNumber}=="02",SYMLINK+="gps%n"
+#ATTR{idVendor}=="1199", ATTR{bInterfaceNumber}=="02", SYMLINK+="gps%n"
+
+### Note: this one works
+SUBSYSTEM=="tty", ACTION=="add", ENV{ID_USB_INTERFACE_NUM}=="02", SYMLINK+="gps%n"
+#SUBSYSTEM=="tty", \
+#    ATTRS{idVendor}=="1199", ENV{ID_USB_INTERFACE_NUM}=="02", ENV{ID_MM_PORT_IGNORE}="1"
+
+#ATTRS{idVendor}=="1199", ATTRS{idProduct}=="XXXX", SUBSYSTEM=="tty", ENV{ID_MM_PORT_IGNORE}="1"
+
+#,ENV{ID_MM_PORT_IGNORE}="1",RUN+="/usr/sbin/gpsdctl add $devnode"
+#SUBSYSTEM=="tty",ACTION=="remove",ENV{ID_VENDOR_ID}=="1199",ATTRS{bInterfaceNumber}=="02",RUN+="/usr/sbin/gpsdctl remove $devnode"

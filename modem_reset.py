@@ -6,6 +6,7 @@ import time
 import re
 import subprocess
 import sys
+import os
 import os.path
 from logging import Logger
 from fcntl import ioctl
@@ -80,8 +81,8 @@ def waitForModemDevice(vidPid=None, maxRetries:int=None, interval:float=None):
     matches = proccomp.stdout.splitlines()
     
     # can only do 1 atm
-    if len(matches) > 1:
-        raise RuntimeError(f'Too many matching devices.  Expected max of 1, but found {len(matches)}')
+    #if len(matches) > 1:
+    #    raise RuntimeError(f'Too many matching devices.  Expected max of 1, but found {len(matches)}')
     # if we found our device, exit the loop
     if len(matches) < 1:
         raise RuntimeError(f'No matching device files.  Expected 1, but found {len(matches)}')
@@ -118,9 +119,10 @@ def resetModem(vidPid=None, maxRetries:int=None, interval:float=None):
     devNodePath=f'/dev/bus/usb/{usbDevPciBusNum:03d}/{usbDevPciDevNum:03d}'
     logger.debug(f'Path to the USB device node of the modem: {devNodePath}')
 
-    # This part works with ANY usb device
-    with open(devNodePath, "wb") as fd:
-        ioctl(fd, USBDEVFS_RESET, 0)
+    if os.environ.get('PREP_ONLY', 'false') != 'true':
+        # This part works with ANY usb device
+        with open(devNodePath, "wb") as fd:
+            ioctl(fd, USBDEVFS_RESET, 0)
 
 if __name__ == '__main__':
     import logging
