@@ -760,6 +760,9 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
     # wait for modem to come back
     waitForModemDevice(maxRetries=30)
 
+    # Give the modem a couple seconds to settle down
+    time.sleep(2)
+
     # auto-discover at device name
     curSerialDevPath = serialDevPath
     if serialDevPath is None:
