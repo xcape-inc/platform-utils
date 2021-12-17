@@ -367,6 +367,11 @@ def waitForModemDevice(vidPid=None, maxRetries:int=None, interval:float=None, pi
     proccomp = subprocess.run([findPath, '/dev', '-maxdepth', '1', '-regex', '/dev/cdc-wdm[0-9]', '-o', '-regex', '/dev/qcqmi[0-9]'], capture_output=True, check=True, encoding='utf-8')
 
     matches = proccomp.stdout.splitlines()
+
+    # Make sure the found devices are for the requested vid/pid
+    if vidPid is None:
+        vidPid = DEFAULT_DEVICE_VID_PID
+    matches = list(filter(lambda curDevice: vidPid == getVidPidOfDevice(curDevice), matches))
     
     # can only do 1 atm
     if len(matches) > 1 and not pickFirstDevice:
@@ -396,7 +401,7 @@ def waitForModemAtDevice(vidPid=None, maxRetries:int=None, interval:float=None, 
     proccomp = subprocess.run([findPath, '/dev', '-maxdepth', '1', '-mindepth', '1', '-type', 'l', '-iname', 'mm-at*'], capture_output=True, check=True, encoding='utf-8')
 
     matches = proccomp.stdout.splitlines()
-    
+
     # can only do 1 atm
     if len(matches) > 1 and not pickFirstDevice:
         raise RuntimeError(f'Too many matching devices.  Expected max of 1, but found {len(matches)}')
@@ -440,8 +445,43 @@ def waitForModemGoneAfterCall(methodToCall:Callable, vidPid=None, maxRetries:int
         raise UsbDeviceFoundError()
 
 
+def getVidPidOfDevice(modemDevPath):
+    # get enough device info to find the pci device
+    qmiDevStat = os.stat(modemDevPath)
+    qmiDevRdev = qmiDevStat.st_rdev
+    qmiDevMajor = os.major(qmiDevRdev)
+    qmiDevMinor = os.minor(qmiDevRdev)
+    # USB sysfs for QMI char device of modem
+    sysfsCharDevPath = f'/sys/dev/char/{qmiDevMajor}:{qmiDevMinor}/device'
+    logger.debug(f'* USB sysfs for QMI char device of modem (unresolved): {sysfsCharDevPath}')
+    sysfsCharDevPciPath = os.path.realpath(sysfsCharDevPath)
+    logger.debug(f'* USB sysfs for QMI char device of modem: {sysfsCharDevPciPath}')
+    # PCI device
+    sysfsUsbDevPciPath = os.path.join(sysfsCharDevPciPath, '..')
+    logger.debug(f'* sysfs path for PCI device for QMI char device of modem: {sysfsUsbDevPciPath}')
+    # Device identity info
+    sysfsUsbDevPciVendorPath = os.path.join(sysfsUsbDevPciPath, 'idVendor')
+    sysfsUsbDevPciProductPath = os.path.join(sysfsUsbDevPciPath, 'idProduct')
+
+    usbDevPciVid = None
+    with open(sysfsUsbDevPciVendorPath, 'r') as vidFileObj:
+        usbDevPciVid = vidFileObj.read().strip()
+
+    usbDevPciPidNum = None
+    with open(sysfsUsbDevPciProductPath, 'r') as pidFileObj:
+        usbDevPciPidNum = pidFileObj.read().strip()
+
+    vidPid = f'{usbDevPciVid}:{usbDevPciPidNum}'
+
+    logger.debug(f'* Device {modemDevPath} has vid:pid of {vidPid}')
+
+    return vidPid
+
+
 def resetModemUsb(vidPid=None, maxRetries:int=None, interval:float=None, pickFirstDevice=None):
+    logger.debug(f'Going to reset {vidPid}, pickFirstDevice is {pickFirstDevice}')
     modemDevPath = waitForModemDevice(vidPid=vidPid, maxRetries=maxRetries, interval=interval, pickFirstDevice=pickFirstDevice)
+    logger.debug(f'{vidPid} has device path {modemDevPath}')
 
     # get enough device info to find the pci device
     qmiDevStat = os.stat(modemDevPath)
@@ -450,6 +490,7 @@ def resetModemUsb(vidPid=None, maxRetries:int=None, interval:float=None, pickFir
     qmiDevMinor = os.minor(qmiDevRdev)
     # USB sysfs for QMI char device of modem
     sysfsCharDevPath = f'/sys/dev/char/{qmiDevMajor}:{qmiDevMinor}/device'
+    logger.debug(f'USB sysfs for QMI char device of modem (unresolved): {sysfsCharDevPath}')
     sysfsCharDevPciPath = os.path.realpath(sysfsCharDevPath)
     logger.debug(f'USB sysfs for QMI char device of modem: {sysfsCharDevPciPath}')
     # PCI device
@@ -689,20 +730,22 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
     if serialDevPath is None:
         curSerialDevPath = waitForModemAtDevice()
 
-    with serial.Serial(curSerialDevPath, 115200, timeout=0) as ser:
-        spawn = pexpect.fdpexpect.fdspawn(ser, encoding='utf-8', logfile = sys.stdout)
+    # Dont erase the firmware if we are not programming firmware; the rest of the process gets skipped a different way
+    if os.getenv('SKIP_FIRMWARE_APPLY') != 'true':
+        with serial.Serial(curSerialDevPath, 115200, timeout=0) as ser:
+            spawn = pexpect.fdpexpect.fdspawn(ser, encoding='utf-8', logfile = sys.stdout)
 
-        sendAtCommand = getSendAtCommand(spawn)
+            sendAtCommand = getSendAtCommand(spawn)
 
-        # unlock "privileged" commands on the modem
-        sendAtCommand(f'AT!ENTERCND="{unlockPassword}"', waitTime=10)
-        # clear all firmware images
-        sendAtCommand('AT!IMAGE=0')
-    # reset the modem
-    resetModem()
-    waitForModemDevice()
+            # unlock "privileged" commands on the modem
+            sendAtCommand(f'AT!ENTERCND="{unlockPassword}"', waitTime=10)
+            # clear all firmware images
+            sendAtCommand('AT!IMAGE=0')
+        # reset the modem
+        resetModem()
+        waitForModemDevice()
 
-    # TODO: Move the firmware laoding to a method
+    # TODO: Move the firmware loading to a method
     
     firmwareCommandArgs = [getQmiFlashBinaryPath(), '--update', '-d', '1199:9071', '--override-download']
     # flash each set of firmware files
@@ -1008,4 +1051,4 @@ if __name__ == '__main__':
     if len(sys.argv) > 2:
         gps_serial_dev_path = sys.argv[2]
 
-    configureModem(serial_dev_path)
+    configureModem(serial_dev_path, [] if (os.getenv('SKIP_FIRMWARE_APPLY') == 'true') else None)
