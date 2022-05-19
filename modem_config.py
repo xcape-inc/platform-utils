@@ -21,7 +21,7 @@ from urllib.parse import urljoin, urlparse, unquote as urllib_unquote
 
 logger = Logger(os.path.splitext(os.path.basename(__file__))[0])
 
-SIERRA_WIRELESS_MC74XX_FIRMWARE_URL = 'https://source.sierrawireless.com/resources/airprime/minicard/74xx/airprime-em_mc74xx-approved-fw-packages'
+SIERRA_WIRELESS_MC74XX_FIRMWARE_URL = 'https://source.sierrawireless.com/resources/airprime/minicard/74xx/em_mc74xx-approved-fw-packages'
 
 # FYI: known file hashes
 '''
@@ -806,7 +806,7 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
     # Give the modem a couple seconds to settle down
     time.sleep(2)
 
-    # auto-discover at device name
+    # auto-discover at device namef
     curSerialDevPath = serialDevPath
     if serialDevPath is None:
         curSerialDevPath = waitForModemAtDevice()
