@@ -13,7 +13,7 @@ SCRIPT_DIR=$(dirname ${REAL_SCRIPT_PATH}})
 #touch /var/log/bettercap.log
 #tail -f /var/log/bettercap.log &
 KERNEL_VERSION=$(uname -r)
-DKMS_DRIVER_NAME=8814au
+DKMS_DRIVER_NAME=88XXau
 DKMS_DRIVER_FILENAME="${DKMS_DRIVER_NAME}.ko"
 DKMS_DRIVER_PATH="/lib/modules/${KERNEL_VERSION}/updates/dkms/${DKMS_DRIVER_FILENAME}"
 echo "DKMS_DRIVER_PATH=${DKMS_DRIVER_PATH}"
