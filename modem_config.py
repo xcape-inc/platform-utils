@@ -32,19 +32,19 @@ bf2a077d344bed69498c560ca5b14f19491a0545b85faef58617e804dedbccb9ef548bfa8d3bdf8b
 '''
 
 # Presumed table headers (hardcoded - modelHeader column is the carrier name cells):
-# ${modelHeader}   Firmware   PRI   Windows EXE   Linux Binaries   Comment
+# ${modelHeader}   Firmware   PRI   Firmware Files   Windows EXE   Comment
 FIRMWARE_TABLE_HEADERS = [
     'Carrier',
     'Firmware',
     'PRI',
+    'Firmware Files',
     'Windows EXE',
-    'Linux Binaries',
     'Comment'
 ]
 
 FIRMWARE_LINK_TABLE_HEADERS = [
-    'Windows EXE',
-    'Linux Binaries'
+    'Firmware Files',
+    'Windows EXE'
 ]
 
 DEFAULT_FIRMWARE_ORDER_LIST = [
@@ -122,9 +122,11 @@ def downloadFirmware(pageUrlToParse, modelHeader, carrierList=None):
                 # if this is one of the link fields, get the a href value, else get the cell text
                 curFieldValue = None
                 if curCellHeader in FIRMWARE_LINK_TABLE_HEADERS:
-                    # Note: This presently expects there ot be only 1 link in this cell and for it not to be nested
-                    curLinkObj = curTargetCell.select_one(':scope > a:nth-child(1)')
-                    curFieldValue = urljoin(pageUrlToParse, curLinkObj['href'])
+                    # Note: This presently expects there to be only 1 link in this cell and for it not to be nested
+                    curLinkObj = curTargetCell.select_one(':scope > p > a:nth-child(1)')
+                    # If there is a link in therte, grab it
+                    if curLinkObj is not None:
+                        curFieldValue = urljoin(pageUrlToParse, curLinkObj['href'])
                 else:
                     curCellStrippedStringList = [
                         curStrippedString for curStrippedString in curTargetCell.stripped_strings]
@@ -135,7 +137,10 @@ def downloadFirmware(pageUrlToParse, modelHeader, carrierList=None):
                             + f"{curFirstCell}: {curCellStrippedStringList}")
                     curFieldValue = curCellStrippedStringList[0]
                 # append current field value to the firmware dictionary
-                foundCarrierFwFileLinks[curFirstCellStrippedString].update({curCellHeader: curFieldValue})
+                if curFieldValue is not None:
+                    foundCarrierFwFileLinks[curFirstCellStrippedString].update({curCellHeader: curFieldValue})
+            if len(foundCarrierFwFileLinks[curFirstCellStrippedString].keys()) < 1:
+                del foundCarrierFwFileLinks[curFirstCellStrippedString]
     logger.info(f'Parsed firmware:\n{json.dumps(foundCarrierFwFileLinks, indent=4)}')
 
     # Make sure we found them all
@@ -151,7 +156,7 @@ def downloadFirmware(pageUrlToParse, modelHeader, carrierList=None):
     # TODO: this could maybe done concurrently to save time
     for curCarrierName in carrierList:
         curFirmwareDict = foundCarrierFwFileLinks[curCarrierName]
-        curZipUrl = curFirmwareDict['Linux Binaries']
+        curZipUrl = curFirmwareDict['Firmware Files']
 
         logger.info(f'Downloading firmware for carrier {curCarrierName} ({curZipUrl})')
 
@@ -787,8 +792,8 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
         
         # TODO: need to talk to TJ about this; only have single at!sim w xcape apn (on tmo); can this work??? I've had issues...
         # enable auto-sim for firmware hopping+APN
-        #sendAtCommand('AT!IMPREF="AUTO-SIM"')
-        sendAtCommand('AT!IMPREF="GENERIC"')
+        sendAtCommand('AT!IMPREF="AUTO-SIM"')
+        #sendAtCommand('AT!IMPREF="GENERIC"')
 
 
         # set QMI mode and expose composite devices (diag,nmea,modem,rmnet0)
@@ -906,7 +911,7 @@ def configureModem(serialDevPath, firmwareToApply:list=None, unlockPassword='A71
         #sendAtCommand('AT!GPSTRANSSEC=7')
         #sendAtCommand('AT!GPSTRANSSEC=7')
         ##### GOBIIM ?
-        # set the agps supl version to 1
+        # set the agps supl version to 2
         sendAtCommand('AT!GPSSUPLVER=2')
 
         sendAtCommand('AT!CUSTOM="GPSLPM",1')
